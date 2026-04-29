@@ -15,6 +15,7 @@ import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { Button } from '@/components/ui/button'
 import { ProjectManagerModal } from '@/components/modals/project-manager-modal'
 import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from '@/components/chat/session-message'
+import TaskGanttView from './TaskGanttView'
 
 const log = createClientLogger('TaskBoard')
 
@@ -1029,7 +1030,6 @@ export function TaskBoardPanel() {
             setSelectedTask(task)
             updateTaskUrl(task.id)
           }}
-          onRefresh={fetchData}
         />
       ) : (
       <div className="flex-1 min-h-0 flex gap-4 p-4 overflow-x-auto" role="region" aria-label={t('taskBoard')}>

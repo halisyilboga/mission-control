@@ -28,9 +28,17 @@ interface Task {
   created_by: string
   created_at: number
   updated_at: number
+  start_date?: number
   due_date?: number
   estimated_hours?: number
+  duration_hours?: number
   actual_hours?: number
+  blocked_by_count?: number
+  blocks_count?: number
+  incomplete_blockers_count?: number
+  is_blocked?: boolean
+  dependency_risk?: 'none' | 'blocked' | 'at_risk' | 'off_track'
+  off_track?: boolean
   tags?: string[]
   metadata?: any
   aegisApproved?: boolean
@@ -79,6 +87,44 @@ interface Project {
   slug: string
   ticket_prefix: string
   status: 'active' | 'archived'
+}
+
+interface TaskDependency {
+  id: number
+  predecessor_task_id: number
+  successor_task_id: number
+  type: 'finish_to_start' | 'start_to_start' | 'finish_to_finish' | 'start_to_finish'
+  lag_minutes: number
+  predecessor_title?: string
+  predecessor_status?: string
+  predecessor_ticket_ref?: string | null
+  successor_title?: string
+  successor_status?: string
+  successor_ticket_ref?: string | null
+}
+
+interface TaskScheduleRow {
+  id: number
+  title: string
+  status: Task['status']
+  priority: Task['priority']
+  project_id?: number
+  project_name?: string
+  ticket_ref?: string
+  assigned_to?: string
+  start_date?: number
+  due_date?: number
+  duration_hours: number
+  planned_start: number
+  planned_finish: number
+  earliest_start: number
+  earliest_finish: number
+  blocked_by_count: number
+  blocks_count: number
+  incomplete_blockers_count: number
+  is_blocked: boolean
+  dependency_risk: 'none' | 'blocked' | 'at_risk' | 'off_track'
+  off_track: boolean
 }
 
 interface MentionOption {
@@ -164,6 +210,32 @@ const priorityColors: Record<string, string> = {
   medium: 'border-l-yellow-500',
   high: 'border-l-orange-500',
   critical: 'border-l-red-500',
+}
+
+const DAY_SECONDS = 86400
+
+function toDateInput(timestamp?: number | null): string {
+  if (!timestamp) return ''
+  return new Date(timestamp * 1000).toISOString().slice(0, 10)
+}
+
+function fromDateInput(value: string): number | undefined {
+  if (!value) return undefined
+  const time = new Date(`${value}T00:00:00`).getTime()
+  if (!Number.isFinite(time)) return undefined
+  return Math.floor(time / 1000)
+}
+
+function formatShortDate(timestamp?: number | null): string {
+  if (!timestamp) return 'Unscheduled'
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function dependencyBadgeClass(task: Pick<Task, 'dependency_risk' | 'is_blocked' | 'off_track'>): string {
+  if (task.dependency_risk === 'off_track' || task.off_track) return 'bg-red-500/15 text-red-400 border-red-500/25'
+  if (task.dependency_risk === 'at_risk') return 'bg-amber-500/15 text-amber-400 border-amber-500/25'
+  if (task.is_blocked) return 'bg-orange-500/15 text-orange-400 border-orange-500/25'
+  return 'bg-sky-500/15 text-sky-400 border-sky-500/25'
 }
 
 function useMentionTargets() {
@@ -407,6 +479,7 @@ export function TaskBoardPanel() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showProjectManager, setShowProjectManager] = useState(false)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
+  const [viewMode, setViewMode] = useState<'board' | 'timeline'>('board')
   const [showSpawnForm, setShowSpawnForm] = useState(false)
   const [spawnFormData, setSpawnFormData] = useState<SpawnFormData>({
     task: '',
@@ -815,6 +888,24 @@ export function TaskBoardPanel() {
               <path d="M4 6l4 4 4-4" />
             </svg>
           </div>
+          <div className="inline-flex h-9 rounded-md border border-border bg-surface-1 p-0.5" role="tablist" aria-label="Task view mode">
+            {(['board', 'timeline'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="tab"
+                aria-selected={viewMode === mode}
+                onClick={() => setViewMode(mode)}
+                className={`px-3 text-xs font-medium rounded transition-colors ${
+                  viewMode === mode
+                    ? 'bg-secondary text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {mode === 'board' ? 'Board' : 'Timeline'}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setShowProjectManager(true)}>
@@ -930,7 +1021,17 @@ export function TaskBoardPanel() {
         </div>
       )}
 
-      {/* Kanban Board */}
+      {viewMode === 'timeline' ? (
+        <TaskGanttView
+          projectFilter={projectFilter}
+          tasks={tasks}
+          onSelectTask={(task) => {
+            setSelectedTask(task)
+            updateTaskUrl(task.id)
+          }}
+          onRefresh={fetchData}
+        />
+      ) : (
       <div className="flex-1 min-h-0 flex gap-4 p-4 overflow-x-auto" role="region" aria-label={t('taskBoard')}>
         {statusColumns.map(column => (
           <div
@@ -1040,6 +1141,19 @@ export function TaskBoardPanel() {
                               Aegis
                             </span>
                           )}
+                          {(task.is_blocked || task.off_track || (task.blocked_by_count || 0) > 0) && (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${dependencyBadgeClass(task)}`}
+                              title={`${task.incomplete_blockers_count || 0} unfinished blocker${(task.incomplete_blockers_count || 0) === 1 ? '' : 's'}`}
+                            >
+                              {task.off_track ? 'OFF TRACK' : task.is_blocked ? 'BLOCKED' : `${task.blocked_by_count} DEP`}
+                            </span>
+                          )}
+                          {(task.blocks_count || 0) > 0 && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20 font-mono" title={`Blocks ${task.blocks_count} task${task.blocks_count === 1 ? '' : 's'}`}>
+                              BLOCKS {task.blocks_count}
+                            </span>
+                          )}
                           {detectAwaitingOwner(task) && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400 border border-orange-500/30 font-mono">
                               {t('colAwaitingOwner')}
@@ -1136,6 +1250,7 @@ export function TaskBoardPanel() {
           </div>
         ))}
       </div>
+      )}
 
       {/* Claude Code Tasks */}
       <ClaudeCodeTasksSection />
@@ -1147,6 +1262,7 @@ export function TaskBoardPanel() {
       {selectedTask && !editingTask && (
         <TaskDetailModal
           task={selectedTask}
+          tasks={tasks}
           agents={agents}
           projects={projects}
           onClose={() => {
@@ -1197,6 +1313,7 @@ export function TaskBoardPanel() {
 // Task Detail Modal Component (placeholder - would be implemented separately)
 function TaskDetailModal({
   task,
+  tasks,
   agents,
   projects,
   onClose,
@@ -1205,6 +1322,7 @@ function TaskDetailModal({
   onDelete
 }: {
   task: Task
+  tasks: Task[]
   agents: Agent[]
   projects: Project[]
   onClose: () => void
@@ -1229,6 +1347,9 @@ function TaskDetailModal({
   const [reviewStatus, setReviewStatus] = useState<'approved' | 'rejected'>('approved')
   const [reviewNotes, setReviewNotes] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
+  const [dependencies, setDependencies] = useState<TaskDependency[]>([])
+  const [dependencyTaskId, setDependencyTaskId] = useState('')
+  const [dependencyError, setDependencyError] = useState<string | null>(null)
   const mentionTargets = useMentionTargets()
   const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
   const [reviewer, setReviewer] = useState('aegis')
@@ -1258,12 +1379,27 @@ function TaskDetailModal({
     }
   }, [task.id])
 
+  const fetchDependencies = useCallback(async () => {
+    try {
+      setDependencyError(null)
+      const response = await fetch(`/api/tasks/dependencies?task_id=${task.id}`)
+      if (!response.ok) throw new Error('Failed to fetch dependencies')
+      const data = await response.json()
+      setDependencies(data.dependencies || [])
+    } catch {
+      setDependencyError('Failed to load dependencies')
+    }
+  }, [task.id])
+
   useEffect(() => {
     fetchComments()
   }, [fetchComments])
   useEffect(() => {
     fetchReviews()
   }, [fetchReviews])
+  useEffect(() => {
+    fetchDependencies()
+  }, [fetchDependencies])
   
   useSmartPoll(fetchComments, 15000)
 
@@ -1334,6 +1470,44 @@ function TaskDetailModal({
       onUpdate()
     } catch (error) {
       setReviewError('Failed to submit review')
+    }
+  }
+
+  const handleAddDependency = async () => {
+    const predecessorId = Number(dependencyTaskId)
+    if (!Number.isFinite(predecessorId) || predecessorId <= 0) return
+    try {
+      setDependencyError(null)
+      const response = await fetch(`/api/tasks/${task.id}/dependencies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          predecessor_task_id: predecessorId,
+          type: 'finish_to_start',
+        }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'Failed to add dependency')
+      setDependencyTaskId('')
+      await fetchDependencies()
+      onUpdate()
+    } catch (error) {
+      setDependencyError(error instanceof Error ? error.message : 'Failed to add dependency')
+    }
+  }
+
+  const handleDeleteDependency = async (dependencyId: number) => {
+    try {
+      setDependencyError(null)
+      const response = await fetch(`/api/tasks/${task.id}/dependencies/${dependencyId}`, {
+        method: 'DELETE',
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'Failed to remove dependency')
+      await fetchDependencies()
+      onUpdate()
+    } catch (error) {
+      setDependencyError(error instanceof Error ? error.message : 'Failed to remove dependency')
     }
   }
 
@@ -1427,6 +1601,17 @@ function TaskDetailModal({
     medium: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25',
     low: 'bg-green-500/15 text-green-400 border-green-500/25',
   }
+
+  const blockedByDependencies = dependencies.filter((dependency) => dependency.successor_task_id === task.id)
+  const blocksDependencies = dependencies.filter((dependency) => dependency.predecessor_task_id === task.id)
+  const dependencyCandidateIds = new Set([
+    task.id,
+    ...blockedByDependencies.map((dependency) => dependency.predecessor_task_id),
+  ])
+  const dependencyCandidates = tasks
+    .filter((candidate) => !dependencyCandidateIds.has(candidate.id))
+    .filter((candidate) => !task.project_id || candidate.project_id === task.project_id)
+    .sort((a, b) => a.title.localeCompare(b.title))
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
@@ -1602,12 +1787,99 @@ function TaskDetailModal({
                   <span className="text-muted-foreground/60 uppercase tracking-wider text-[10px]">{t('created')}</span>
                   <div className="text-foreground">{new Date(task.created_at * 1000).toLocaleDateString()}</div>
                 </div>
+                {task.start_date && (
+                  <div className="space-y-0.5">
+                    <span className="text-muted-foreground/60 uppercase tracking-wider text-[10px]">Start</span>
+                    <div className="text-foreground">{new Date(task.start_date * 1000).toLocaleDateString()}</div>
+                  </div>
+                )}
                 {task.due_date && (
                   <div className="space-y-0.5">
                     <span className="text-muted-foreground/60 uppercase tracking-wider text-[10px]">Due</span>
                     <div className="text-foreground">{new Date(task.due_date * 1000).toLocaleDateString()}</div>
                   </div>
                 )}
+                {(task.duration_hours || task.estimated_hours) && (
+                  <div className="space-y-0.5">
+                    <span className="text-muted-foreground/60 uppercase tracking-wider text-[10px]">Duration</span>
+                    <div className="text-foreground">{task.duration_hours || task.estimated_hours}h</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-border/30 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground/60 uppercase tracking-wider text-[10px]">Dependencies</span>
+                  {(task.is_blocked || task.off_track || task.blocks_count || task.blocked_by_count) ? (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${dependencyBadgeClass(task)}`}>
+                      {task.off_track ? 'Off track' : task.is_blocked ? `${task.incomplete_blockers_count || 0} blocker${(task.incomplete_blockers_count || 0) === 1 ? '' : 's'}` : `${task.blocked_by_count || 0} linked`}
+                    </span>
+                  ) : null}
+                </div>
+
+                {dependencyError && (
+                  <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-md px-2 py-1">
+                    {dependencyError}
+                  </div>
+                )}
+
+                <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                  <select
+                    value={dependencyTaskId}
+                    onChange={(e) => setDependencyTaskId(e.target.value)}
+                    className="min-w-0 text-xs bg-card border border-border rounded-md px-2 py-1.5 text-foreground cursor-pointer focus:ring-1 focus:ring-primary/50 focus:border-primary/50 outline-none transition-colors"
+                    aria-label="Add blocking predecessor"
+                  >
+                    <option value="">Add blocked-by task...</option>
+                    {dependencyCandidates.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.ticket_ref ? `${candidate.ticket_ref} ` : ''}{candidate.title}
+                      </option>
+                    ))}
+                  </select>
+                  <Button type="button" size="sm" variant="secondary" onClick={handleAddDependency} disabled={!dependencyTaskId}>
+                    Add
+                  </Button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-muted-foreground">Blocked by</div>
+                    {blockedByDependencies.length === 0 ? (
+                      <div className="text-xs text-muted-foreground/50">No blockers</div>
+                    ) : (
+                      blockedByDependencies.map((dependency) => (
+                        <div key={dependency.id} className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-secondary/20 px-2 py-1.5">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs text-foreground">{dependency.predecessor_ticket_ref ? `${dependency.predecessor_ticket_ref} ` : ''}{dependency.predecessor_title}</div>
+                            <div className="text-[10px] text-muted-foreground">{dependency.predecessor_status?.replace(/_/g, ' ')}</div>
+                          </div>
+                          <Button variant="ghost" size="icon-xs" onClick={() => handleDeleteDependency(dependency.id)} aria-label="Remove dependency">
+                            ×
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-muted-foreground">Blocks</div>
+                    {blocksDependencies.length === 0 ? (
+                      <div className="text-xs text-muted-foreground/50">No downstream tasks</div>
+                    ) : (
+                      blocksDependencies.map((dependency) => (
+                        <div key={dependency.id} className="flex items-center justify-between gap-2 rounded-md border border-border/40 bg-secondary/20 px-2 py-1.5">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs text-foreground">{dependency.successor_ticket_ref ? `${dependency.successor_ticket_ref} ` : ''}{dependency.successor_title}</div>
+                            <div className="text-[10px] text-muted-foreground">{dependency.successor_status?.replace(/_/g, ' ')}</div>
+                          </div>
+                          <Button variant="ghost" size="icon-xs" onClick={() => handleDeleteDependency(dependency.id)} aria-label="Remove dependency">
+                            ×
+                          </Button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* GitHub section */}
@@ -2066,6 +2338,10 @@ function CreateTaskModal({
     priority: 'medium' as Task['priority'],
     project_id: projects[0]?.id ? String(projects[0].id) : '',
     assigned_to: '',
+    start_date: '',
+    due_date: '',
+    duration_hours: '',
+    estimated_hours: '',
     tags: '',
     target_session: '',
   })
@@ -2123,6 +2399,10 @@ function CreateTaskModal({
         body: JSON.stringify({
           ...formData,
           project_id: formData.project_id ? Number(formData.project_id) : undefined,
+          start_date: fromDateInput(formData.start_date),
+          due_date: fromDateInput(formData.due_date),
+          duration_hours: formData.duration_hours ? Number(formData.duration_hours) : undefined,
+          estimated_hours: formData.estimated_hours ? Number(formData.estimated_hours) : undefined,
           tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : [],
           assigned_to: formData.assigned_to || undefined,
           metadata,
@@ -2224,6 +2504,53 @@ function CreateTaskModal({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="create-start-date" className="block text-sm text-muted-foreground mb-1">Start</label>
+                <input
+                  id="create-start-date"
+                  type="date"
+                  value={formData.start_date}
+                  onChange={(e) => setFormData(prev => ({ ...prev, start_date: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label htmlFor="create-due-date" className="block text-sm text-muted-foreground mb-1">Due</label>
+                <input
+                  id="create-due-date"
+                  type="date"
+                  value={formData.due_date}
+                  onChange={(e) => setFormData(prev => ({ ...prev, due_date: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label htmlFor="create-duration-hours" className="block text-sm text-muted-foreground mb-1">Duration (h)</label>
+                <input
+                  id="create-duration-hours"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={formData.duration_hours}
+                  onChange={(e) => setFormData(prev => ({ ...prev, duration_hours: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+              <div>
+                <label htmlFor="create-estimated-hours" className="block text-sm text-muted-foreground mb-1">Estimate (h)</label>
+                <input
+                  id="create-estimated-hours"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={formData.estimated_hours}
+                  onChange={(e) => setFormData(prev => ({ ...prev, estimated_hours: e.target.value }))}
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
             </div>
 
             {formData.assigned_to && agentSessions.length > 0 && (

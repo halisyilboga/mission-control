@@ -5,6 +5,7 @@ import { eventBus } from './event-bus'
 import { logger } from './logger'
 import { config } from './config'
 import { syncTaskOutbound } from './github-sync-engine'
+import { incompleteBlockersExistsSql } from './task-dependencies'
 
 /** Sync task to GitHub/GNAP and broadcast escalation if task failed */
 function syncAndEscalateIfFailed(task: { id: number; title: string; status: string; priority: string; project_id?: number | null; workspace_id: number; description?: string | null }, newStatus: string, errorMsg?: string, dispatchAttempts?: number): void {
@@ -623,6 +624,44 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
 export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: string }> {
   const db = getDatabase()
 
+  const blockedTasks = db.prepare(`
+    SELECT t.id, t.title, t.workspace_id,
+      GROUP_CONCAT(p.title, ', ') as blocker_titles
+    FROM tasks t
+    JOIN task_dependencies d
+      ON d.successor_task_id = t.id
+     AND d.workspace_id = t.workspace_id
+    JOIN tasks p
+      ON p.id = d.predecessor_task_id
+     AND p.workspace_id = d.workspace_id
+    WHERE t.status = 'assigned'
+      AND t.assigned_to IS NOT NULL
+      AND p.status <> 'done'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM activities a
+        WHERE a.workspace_id = t.workspace_id
+          AND a.entity_type = 'task'
+          AND a.entity_id = t.id
+          AND a.type = 'task_dispatch_blocked'
+          AND a.created_at > unixepoch() - 3600
+      )
+    GROUP BY t.id
+    LIMIT 5
+  `).all() as Array<{ id: number; title: string; workspace_id: number; blocker_titles: string | null }>
+
+  for (const task of blockedTasks) {
+    db_helpers.logActivity(
+      'task_dispatch_blocked',
+      'task',
+      task.id,
+      'scheduler',
+      `Skipped dispatch for "${task.title}" because dependencies are incomplete`,
+      { blockers: task.blocker_titles ? task.blocker_titles.split(', ') : [] },
+      task.workspace_id
+    )
+  }
+
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
            p.ticket_prefix, t.project_ticket_no
@@ -631,6 +670,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
     WHERE t.status = 'assigned'
       AND t.assigned_to IS NOT NULL
+      AND NOT ${incompleteBlockersExistsSql('t')}
     ORDER BY
       CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       t.created_at ASC
@@ -938,8 +978,10 @@ export async function autoRouteInboxTasks(): Promise<{ ok: boolean; message: str
 
   const inboxTasks = db.prepare(`
     SELECT id, title, description, priority, tags, workspace_id
-    FROM tasks
-    WHERE status = 'inbox' AND assigned_to IS NULL
+    FROM tasks t
+    WHERE t.status = 'inbox'
+      AND t.assigned_to IS NULL
+      AND NOT ${incompleteBlockersExistsSql('t')}
     ORDER BY
       CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
       created_at ASC

@@ -200,9 +200,17 @@ export interface Task {
   created_by: string;
   created_at: number;
   updated_at: number;
+  start_date?: number;
   due_date?: number;
   estimated_hours?: number;
+  duration_hours?: number;
   actual_hours?: number;
+  blocked_by_count?: number;
+  blocks_count?: number;
+  incomplete_blockers_count?: number;
+  is_blocked?: boolean;
+  dependency_risk?: 'none' | 'blocked' | 'at_risk' | 'off_track';
+  off_track?: boolean;
   outcome?: 'success' | 'failed' | 'partial' | 'abandoned';
   error_message?: string;
   resolution?: string;

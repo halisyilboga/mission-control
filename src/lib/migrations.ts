@@ -1428,6 +1428,52 @@ const migrations: Migration[] = [
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN signature TEXT DEFAULT NULL`)
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN public_key TEXT DEFAULT NULL`)
     }
+  },
+  {
+    id: '051_task_dependencies_and_schedule',
+    up(db: Database.Database) {
+      const hasTasks = db
+        .prepare(`SELECT 1 as ok FROM sqlite_master WHERE type = 'table' AND name = 'tasks'`)
+        .get() as { ok?: number } | undefined
+      if (!hasTasks?.ok) return
+
+      const taskCols = db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>
+      const hasTaskCol = (name: string) => taskCols.some((c) => c.name === name)
+
+      if (!hasTaskCol('start_date')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN start_date INTEGER`)
+      }
+      if (!hasTaskCol('duration_hours')) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN duration_hours REAL`)
+      }
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_dependencies (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          predecessor_task_id INTEGER NOT NULL,
+          successor_task_id INTEGER NOT NULL,
+          type TEXT NOT NULL DEFAULT 'finish_to_start',
+          lag_minutes INTEGER NOT NULL DEFAULT 0,
+          created_by TEXT NOT NULL DEFAULT 'system',
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (predecessor_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (successor_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          CHECK (predecessor_task_id <> successor_task_id)
+        );
+      `)
+
+      db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_task_dependencies_unique
+          ON task_dependencies(workspace_id, predecessor_task_id, successor_task_id, type);
+        CREATE INDEX IF NOT EXISTS idx_task_dependencies_predecessor
+          ON task_dependencies(workspace_id, predecessor_task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_dependencies_successor
+          ON task_dependencies(workspace_id, successor_task_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_schedule
+          ON tasks(workspace_id, project_id, start_date, due_date);
+      `)
+    }
   }
 ]
 

@@ -3,6 +3,7 @@ import { getDatabase } from '@/lib/db'
 import { requireRole } from '@/lib/auth'
 import { agentTaskLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { incompleteBlockersExistsSql } from '@/lib/task-dependencies'
 
 type QueueReason = 'continue_current' | 'assigned' | 'at_capacity' | 'no_tasks_available'
 
@@ -63,6 +64,7 @@ export async function GET(request: NextRequest) {
     }
 
     const maxCapacityRaw = searchParams.get('max_capacity') || '1'
+    const allowBlocked = searchParams.get('allow_blocked') === '1' || searchParams.get('allow_blocked') === 'true'
     if (!/^\d+$/.test(maxCapacityRaw)) {
       return NextResponse.json({ error: 'Invalid max_capacity. Expected integer 1..20.' }, { status: 400 })
     }
@@ -110,10 +112,11 @@ export async function GET(request: NextRequest) {
       UPDATE tasks
       SET status = 'in_progress', assigned_to = ?, updated_at = ?
       WHERE id = (
-        SELECT id FROM tasks
-        WHERE workspace_id = ?
+        SELECT id FROM tasks t
+        WHERE t.workspace_id = ?
           AND status IN ('assigned', 'inbox')
           AND (assigned_to IS NULL OR assigned_to = ?)
+          ${allowBlocked ? '' : `AND NOT ${incompleteBlockersExistsSql('t')}`}
         ORDER BY ${priorityRankSql()} ASC, due_date ASC NULLS LAST, created_at ASC
         LIMIT 1
       )

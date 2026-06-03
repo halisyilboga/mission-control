@@ -39,8 +39,10 @@ export const createTaskSchema = z.object({
   project_id: z.number().int().positive().optional(),
   assigned_to: z.string().max(100).optional(),
   created_by: z.string().max(100).optional(),
+  start_date: z.number().int().min(0).max(4102444800).optional(),
   due_date: z.number().int().min(0).max(4102444800).optional(), // max ~2100-01-01
   estimated_hours: z.number().min(0).max(10000).optional(),
+  duration_hours: z.number().min(0).max(10000).optional(),
   actual_hours: z.number().min(0).max(10000).optional(),
   outcome: z.enum(['success', 'failed', 'partial', 'abandoned']).optional(),
   error_message: z.string().max(5000).optional(),
@@ -54,6 +56,29 @@ export const createTaskSchema = z.object({
 })
 
 export const updateTaskSchema = createTaskSchema.partial()
+
+export const dependencyTypeSchema = z.enum([
+  'finish_to_start',
+  'start_to_start',
+  'finish_to_finish',
+  'start_to_finish',
+])
+
+export const createTaskDependencySchema = z.object({
+  predecessor_task_id: z.number().int().positive(),
+  type: dependencyTypeSchema.default('finish_to_start'),
+  lag_minutes: z.number().int().min(-525600).max(525600).default(0),
+})
+
+export const updateTaskScheduleSchema = z.object({
+  start_date: z.number().int().min(0).max(4102444800).nullable().optional(),
+  due_date: z.number().int().min(0).max(4102444800).nullable().optional(),
+  duration_hours: z.number().min(0).max(10000).nullable().optional(),
+  estimated_hours: z.number().min(0).max(10000).nullable().optional(),
+}).refine(
+  (value) => Object.keys(value).length > 0,
+  { message: 'At least one schedule field is required' }
+)
 
 export const createAgentSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),

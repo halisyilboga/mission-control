@@ -10,6 +10,7 @@ import { normalizeTaskUpdateStatus } from '@/lib/task-status';
 import { syncTaskOutbound } from '@/lib/github-sync-engine';
 import { removeTaskFromGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
+import { applyDependencySummaryToTasks } from '@/lib/task-dependencies';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -72,7 +73,7 @@ export async function GET(
     }
     
     // Parse JSON fields
-    const taskWithParsedData = mapTaskRow(task);
+    const taskWithParsedData = applyDependencySummaryToTasks(db, workspaceId, [mapTaskRow(task)])[0];
     
     return NextResponse.json({ task: taskWithParsedData });
   } catch (error) {
@@ -123,8 +124,10 @@ export async function PUT(
       priority,
       project_id,
       assigned_to,
+      start_date,
       due_date,
       estimated_hours,
+      duration_hours,
       actual_hours,
       outcome,
       error_message,
@@ -217,6 +220,10 @@ export async function PUT(
       fieldsToUpdate.push('assigned_to = ?');
       updateParams.push(assigned_to);
     }
+    if (start_date !== undefined) {
+      fieldsToUpdate.push('start_date = ?');
+      updateParams.push(start_date);
+    }
     if (due_date !== undefined) {
       fieldsToUpdate.push('due_date = ?');
       updateParams.push(due_date);
@@ -224,6 +231,10 @@ export async function PUT(
     if (estimated_hours !== undefined) {
       fieldsToUpdate.push('estimated_hours = ?');
       updateParams.push(estimated_hours);
+    }
+    if (duration_hours !== undefined) {
+      fieldsToUpdate.push('duration_hours = ?');
+      updateParams.push(duration_hours);
     }
     if (actual_hours !== undefined) {
       fieldsToUpdate.push('actual_hours = ?');
@@ -334,6 +345,14 @@ export async function PUT(
       changes.push(`priority: ${currentTask.priority} → ${priority}`);
     }
 
+    if (start_date !== undefined && start_date !== currentTask.start_date) {
+      changes.push('start date updated');
+    }
+
+    if (due_date !== undefined && due_date !== currentTask.due_date) {
+      changes.push('due date updated');
+    }
+
     if (project_id !== undefined && project_id !== currentTask.project_id) {
       changes.push(`project: ${currentTask.project_id || 'none'} → ${project_id}`);
     }
@@ -389,7 +408,7 @@ export async function PUT(
       LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
       WHERE t.id = ? AND t.workspace_id = ?
     `).get(taskId, workspaceId) as Task;
-    const parsedTask = mapTaskRow(updatedTask);
+    const parsedTask = applyDependencySummaryToTasks(db, workspaceId, [mapTaskRow(updatedTask)])[0];
 
     // Fire-and-forget outbound sync (GitHub + GNAP)
     if (changes.length > 0) {

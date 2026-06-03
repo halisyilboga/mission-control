@@ -12,11 +12,28 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by TEXT NOT NULL DEFAULT 'system',
     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
     updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    start_date INTEGER, -- Unix timestamp
     due_date INTEGER, -- Unix timestamp
     estimated_hours INTEGER,
+    duration_hours REAL,
     actual_hours INTEGER,
     tags TEXT, -- JSON array of tags
     metadata TEXT -- JSON for additional data
+);
+
+-- Task Dependencies - sequencing edges for schedule-aware dispatch and timeline views
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace_id INTEGER NOT NULL DEFAULT 1,
+    predecessor_task_id INTEGER NOT NULL,
+    successor_task_id INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'finish_to_start',
+    lag_minutes INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL DEFAULT 'system',
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    FOREIGN KEY (predecessor_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (successor_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    CHECK (predecessor_task_id <> successor_task_id)
 );
 
 -- Agents Table - Squad management
@@ -116,6 +133,9 @@ CREATE TABLE IF NOT EXISTS gateway_health_logs (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks(assigned_to);
 CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_dependencies_unique ON task_dependencies(workspace_id, predecessor_task_id, successor_task_id, type);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_predecessor ON task_dependencies(workspace_id, predecessor_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_successor ON task_dependencies(workspace_id, successor_task_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task_id ON comments(task_id);
 CREATE INDEX IF NOT EXISTS idx_comments_created_at ON comments(created_at);
 CREATE INDEX IF NOT EXISTS idx_activities_created_at ON activities(created_at);

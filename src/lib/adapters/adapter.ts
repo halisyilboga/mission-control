@@ -1,13 +1,15 @@
 import { getDatabase } from '@/lib/db'
+import { incompleteBlockersExistsSql } from '@/lib/task-dependencies'
 
 export function queryPendingAssignments(agentId: string): Assignment[] {
   try {
     const db = getDatabase()
     const rows = db.prepare(`
       SELECT id, title, description, priority
-      FROM tasks
+      FROM tasks t
       WHERE (assigned_to = ? OR assigned_to IS NULL)
         AND status IN ('assigned', 'inbox')
+        AND NOT ${incompleteBlockersExistsSql('t')}
       ORDER BY
         CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END ASC,
         due_date ASC,
